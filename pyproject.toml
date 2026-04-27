@@ -1,3 +1,4 @@
+
 [project]
 name = "q-haderslev-vbo"
 version = "0.1.0"
@@ -6,5 +7,8 @@ version = "0.1.0"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["q_haderslev_vbo*"]
+[tool.setuptools]
+packages = ["q_haderslev_vbo"]
+
+[tool.setuptools.package-data]
+q_haderslev_vbo = ["**/*.py"]
