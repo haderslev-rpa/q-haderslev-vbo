@@ -8,7 +8,7 @@ from typing import Optional  # Optional (kan være None)
 @dataclass  # decorator (ændrer klasse)
 class PlaywrightDebugHelper:  # klasse (skabelon for objekter)
     debug: bool = True  # bool (sand/falsk)
-    base_dir: Path = Path("Debug")  # Path (sti til mappe)
+    base_dir: Path = Path("debug_playwright")  # Path (sti til mappe)
     run_dir: Optional[Path] = None  # Optional (kan være None)
 
     def __post_init__(self):  # metode (kører efter init)
