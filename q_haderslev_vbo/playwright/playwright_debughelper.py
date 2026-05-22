@@ -88,3 +88,4 @@ def close_all_other_tabs(
         after = len(context.pages)
         print(f"[Playwright] Antal faner EFTER cleanup: {after}")
         #nicolais commenter med
+        #Runes kommentar - Test
