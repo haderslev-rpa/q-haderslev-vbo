@@ -7,7 +7,14 @@ from q_haderslev_vbo.playwright.playwright_debughelper import PlaywrightDebugHel
 # ==============================
 IDP_URL = "https://idp.prod.soloidp.dk/fkrobot/prepare"
 
+# Global debug helper (overskrives i runtime)
 dbg = PlaywrightDebugHelper(debug=False)
+
+# Global credentials (sættes ved runtime)
+CUSTOMER_ID = None
+API_KEY = None
+IDP_GUID = None
+
 
 # ==============================
 # Intern robot-login (ASYNC)
@@ -26,14 +33,18 @@ async def _login_robot(page: Page):
     await page.fill("#robotupn", IDP_GUID)
     await page.fill("#apikey", API_KEY)
 
+    # Submit form
     await page.evaluate("() => document.querySelector('#robotForm').submit()")
 
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_load_state("networkidle")
 
+    # Valider login
     if await page.locator("#robotForm").count() > 0:
-        await dbg.screenshot(page, "FEJL_login")
-        raise RuntimeError("Login på FK IDP fejlede")
+        # ✅ FIX: screenshot er sync → IKKE await
+        dbg.screenshot(page, "FEJL_login")
+        raise RuntimeError("❌ Login på FK IDP fejlede")
+
 
 # ==============================
 # Public API (ASYNC)
@@ -50,6 +61,7 @@ async def login_via_faelles_kommunal_idp(
 
     dbg = PlaywrightDebugHelper(debug=debug)
 
+    # Init Automation Server
     AutomationServer.from_environment()
 
     credential = Credential.get_credential(credential_name)
@@ -59,18 +71,22 @@ async def login_via_faelles_kommunal_idp(
     CUSTOMER_ID = cfg.get("customer id")
     API_KEY = cfg.get("api key")
 
-    assert IDP_GUID, "idp_guid mangler"
-    assert CUSTOMER_ID, "customer id mangler"
-    assert API_KEY, "api key mangler"
+    assert IDP_GUID, "❌ idp_guid mangler"
+    assert CUSTOMER_ID, "❌ customer id mangler"
+    assert API_KEY, "❌ api key mangler"
 
+    # Gå til IDP
     await page.goto(IDP_URL)
     await page.wait_for_load_state("domcontentloaded")
 
-    await dbg.screenshot(page, "IDP_før_login")
+    # ✅ FIX: screenshot er sync → IKKE await
+    dbg.screenshot(page, "IDP_før_login")
 
+    # Login flow
     await _login_robot(page)
 
-    await dbg.screenshot(page, "IDP_efter_login")
+    # ✅ FIX: screenshot er sync → IKKE await
+    dbg.screenshot(page, "IDP_efter_login")
 
 """
 from automation_server_client import AutomationServer, Credential
