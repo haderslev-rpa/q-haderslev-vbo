@@ -1,7 +1,32 @@
+"""
+⚠️ VIGTIGT – LÆS FØR BRUG ⚠️
+
+Denne klasse (PlaywrightRunRecorder) må ALDRIG oprettes direkte.
+
+kald istedet filen browser_session.py og brug BrowserSession til at starte Playwright og oprette recorderen.
+
+✅ KORREKT BRUG:
+    session = BrowserSession()
+    await session.start()
+    recorder = session.recorder
+
+❌ FORKERT BRUG:
+    recorder = PlaywrightRunRecorder()              # ❌
+    recorder = PlaywrightRunRecorder(None)          # ❌
+    python playwright_run_recorder.py               # ❌
+
+ÅRSAG:
+- Recorderen kræver BrowserSession som ejer
+- BrowserSession bestemmer:
+  - run-navn (mappenavn)
+  - browser-livscyklus
+  - hvornår trace/video skal stoppes
+- Recorderen er KUN et værktøj, ikke et entry-point
+"""
+
 from pathlib import Path
 import asyncio
 from playwright.async_api import Page, BrowserContext
-from q_haderslev_vbo.playwright.browser_session import BrowserSession
 
 
 class PlaywrightRunRecorder:
@@ -12,48 +37,35 @@ class PlaywrightRunRecorder:
     - Screenshots (print-screen)
     - Video (start/stop)
     - Trace (debug)
-    - Auto-stop
-    - Exception-sikker lukning
+    - Automatisk oprydning
     - Lazy mappe-oprettelse
-    - SharePoint-upload (SENERE – kommenteret)
+
+    ⚠️ Må kun bruges via BrowserSession ⚠️
     """
 
     BASE_PATH = Path("test_local_playwright")
 
-    # ---------------------------
-    # SHAREPOINT (KUN DOKUMENTATION)
-    # ---------------------------
-    # DEFAULT_SITE = "Automatisering"
-    #
-    # TANKEN HER:
-    # - GitHub repo-navn → SharePoint hovedmappe
-    # - run_name → undermappe
-    #
-    # Eksempel:
-    # Automatisering/
-    # └── advis-vedr-arbejdsskader/
-    #     └── 20-12-2026 10-00 (session 111)/
-    #
-    # SENERE:
-    # if files:
-    #     drive_id, folder_id, file_urls = upload_temp_files(
-    #         sp_client,
-    #         site_name,
-    #         BASE_PATH,
-    #         files
-    #     )
+    def __init__(self, browser_session):
+        # ---------------------------
+        # BESKYTTELSE MOD FORKERT BRUG
+        # ---------------------------
+        if browser_session is None:
+            raise RuntimeError(
+                "PlaywrightRunRecorder må kun oprettes via BrowserSession"
+            )
 
-    def __init__(self, browser_session: BrowserSession):
-        self.browser_session = browser_session
-
+        self.browser_session = browser_session  # objekt (ejer)
         self.run_dir: Path | None = None
+
+        # Recording-state
         self.record_context: BrowserContext | None = None
         self.record_task: asyncio.Task | None = None
-        self.tracing_started = False
+        self.tracing_started: bool = False
+        self.recording_active: bool = False
 
-    # ---------------------------
-    # INTERN: opret mappe lazy
-    # ---------------------------
+    # -------------------------------------------------
+    # LAZY MAPPE-OPRETTELSE
+    # -------------------------------------------------
     def _ensure_run_dir(self):
         if self.run_dir:
             return
@@ -62,31 +74,29 @@ class PlaywrightRunRecorder:
         if not run_name:
             raise RuntimeError("BrowserSession er ikke startet")
 
+        # ✅ Mappenavnet kommer KUN fra BrowserSession
         self.run_dir = self.BASE_PATH / run_name
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------------------------
+    # -------------------------------------------------
     # SCREENSHOT (ALTID TILLADT)
-    # ---------------------------
+    # -------------------------------------------------
     async def screenshot(self, page: Page, name: str):
-        """
-        Tager print-screen
-        Virker både med og uden debug
-        """
         self._ensure_run_dir()
 
-        safe_name = name.replace(" ", "_").replace("/", "_")
-        path = self.run_dir / f"{safe_name}.png"
+        safe = name.replace(" ", "_").replace("/", "_")
+        path = self.run_dir / f"{safe}.png"
 
         await page.screenshot(path=str(path), full_page=True)
         return path
 
-    # ---------------------------
-    # START VIDEO + TRACE
-    # ---------------------------
+    # -------------------------------------------------
+    # START VIDEO + TRACE (VALGFRIT)
+    # -------------------------------------------------
     async def start_recording(self, timeout_seconds: int = 10):
         """
-        Starter video + tracing
+        Starter video + trace.
+        Trace gemmes KUN hvis denne funktion kaldes.
         """
         self._ensure_run_dir()
 
@@ -94,62 +104,66 @@ class PlaywrightRunRecorder:
             record_video_dir=str(self.run_dir)
         )
 
-        # Tracing (debug – ekstra info)
         await self.record_context.tracing.start(
             screenshots=True,
             snapshots=True,
             sources=True
         )
-        self.tracing_started = True
 
-        # Auto-stop timer
+        self.tracing_started = True
+        self.recording_active = True
+
+        # Auto-stop (sikker)
         self.record_task = asyncio.create_task(
             self._auto_stop(timeout_seconds)
         )
 
         return self.record_context
 
-    # ---------------------------
-    # STOP (NORMAL)
-    # ---------------------------
-    async def stop_recording_clean(self, name: str = "finished"):
-        if not self.record_context:
+    # -------------------------------------------------
+    # INTERN FÆLLES FINALIZE
+    # -------------------------------------------------
+    async def _finalize(self, reason: str):
+        if not self.recording_active or not self.record_context:
             return
 
         if self.record_task and not self.record_task.done():
             self.record_task.cancel()
 
+        # ✅ Trace skrives FØR browser lukkes
         if self.tracing_started:
             try:
-                trace_path = self.run_dir / f"{name}_trace.zip"
+                trace_path = self.run_dir / f"{reason}_trace.zip"
                 await self.record_context.tracing.stop(path=str(trace_path))
             except Exception:
+                # Trace må ALDRIG ødelægge video
                 pass
 
+        # ✅ Luk context → video flushes
         await self.record_context.close()
+
         self.record_context = None
+        self.tracing_started = False
+        self.recording_active = False
 
-    # ---------------------------
-    # STOP VED EXCEPTION
-    # ---------------------------
-    async def stop_recording_on_error(self):
-        """
-        Bruges ved fejl:
-        - Video er vigtigst
-        - Ingen tracing.stop (kan give 0 KB video)
-        """
-        if not self.record_context:
-            return
-
-        await self.record_context.close()
-        self.record_context = None
-
-    # ---------------------------
+    # -------------------------------------------------
     # AUTO STOP
-    # ---------------------------
+    # -------------------------------------------------
     async def _auto_stop(self, seconds: int):
         try:
             await asyncio.sleep(seconds)
-            await self.stop_recording_clean("auto_timeout")
+            await self._finalize("auto_stop")
         except asyncio.CancelledError:
             pass
+
+    # -------------------------------------------------
+    # STOP VED FEJL
+    # -------------------------------------------------
+    async def stop_recording_on_error(self):
+        await self._finalize("exception")
+
+    # -------------------------------------------------
+    # KALDES AF BrowserSession.close()
+    # -------------------------------------------------
+    async def finalize_before_browser_close(self):
+        await self._finalize("final")

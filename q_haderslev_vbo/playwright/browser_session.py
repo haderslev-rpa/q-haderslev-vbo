@@ -3,6 +3,8 @@ from datetime import datetime
 import os
 import subprocess
 
+from q_haderslev_vbo.playwright.playwright_run_recorder import PlaywrightRunRecorder
+
 
 class BrowserSession:
     """
@@ -10,40 +12,52 @@ class BrowserSession:
 
     Ansvar:
     - Starte Playwright
-    - Starte browser og context
-    - Finde run-navn og metadata
-    - INGEN mapper
-    - INGEN filer
+    - Starte browser
+    - Holde run-metadata
+    - EJE RunRecorder
+    - Lukke ALT korrekt
+
+    ✅ ENTRY-POINT for AL Playwright-brug
     """
 
     def __init__(self, headless: bool = True):
         self.headless = headless
 
-        # Playwright-objekter (browser-ting)
+        # Playwright-objekter
         self.pw = None
         self.browser = None
         self.context = None
 
-        # Run-metadata (kun hukommelse)
+        # Run-metadata
         self.github_repo_name: str | None = None
         self.session_id: str | None = None
         self.run_timestamp: str | None = None
         self.run_name: str | None = None
 
-    async def start(self):
-        """Starter Playwright og finder metadata"""
+        # Recorder (oprettes automatisk)
+        self.recorder: PlaywrightRunRecorder | None = None
 
+    # -------------------------------------------------
+    # START
+    # -------------------------------------------------
+    async def start(self):
         self.pw = await async_playwright().start()
         self.browser = await self.pw.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context()
 
-        # Find metadata
+        # Run-navn (bruges til mappenavn)
         self.github_repo_name = self._find_github_repo_name()
         self.session_id = self._find_session_id()
         self.run_timestamp = self._generate_timestamp()
         self.run_name = self._generate_run_name()
 
+        # ✅ Recorder oprettes HER (må ikke gøres andre steder)
+        self.recorder = PlaywrightRunRecorder(self)
+
+    # -------------------------------------------------
+    # PAGE
+    # -------------------------------------------------
     async def new_page(self) -> Page:
+        self.context = await self.browser.new_context()
         return await self.context.new_page()
 
     async def ensure_page_alive(self, page: Page | None) -> Page:
@@ -55,7 +69,21 @@ class BrowserSession:
         except Error:
             return await self.new_page()
 
+    # -------------------------------------------------
+    # CLOSE (DET VIGTIGE STED)
+    # -------------------------------------------------
     async def close(self):
+        """
+        Lukker ALT i korrekt rækkefølge:
+        1) Recorder finaliserer (trace/video)
+        2) Context lukkes
+        3) Browser lukkes
+        4) Playwright stoppes
+        """
+
+        if self.recorder:
+            await self.recorder.finalize_before_browser_close()
+
         if self.context:
             await self.context.close()
         if self.browser:
@@ -66,26 +94,17 @@ class BrowserSession:
     # ---------------- METADATA ----------------
 
     def _generate_timestamp(self) -> str:
-        """Dansk dato + tid"""
         return datetime.now().strftime("%d-%m-%Y %H-%M")
 
     def _generate_run_name(self) -> str:
-        """Sammensæt run-navn"""
         if self.session_id:
             return f"{self.run_timestamp} (session {self.session_id})"
         return self.run_timestamp
 
     def _find_session_id(self) -> str | None:
-        """Automation Server session-id (env)"""
         return os.getenv("AUTOMATION_SESSION_ID")
 
     def _find_github_repo_name(self) -> str:
-        """
-        GitHub repo-navn:
-        1) ENV: GITHUB_REPO_NAME
-        2) git config
-        3) fallback
-        """
         env_name = os.getenv("GITHUB_REPO_NAME")
         if env_name:
             return env_name
