@@ -1,57 +1,100 @@
-from __future__ import annotations
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 import asyncio
+from playwright.async_api import Page, BrowserContext
+from q_haderslev_vbo.playwright.browser_session import BrowserSession
 
-from playwright.async_api import Page, Browser, BrowserContext
 
-
-@dataclass
 class PlaywrightRunRecorder:
-    debug: bool = False
-    base_dir: Path = Path("test_local_playwright")
+    """
+    PlaywrightRunRecorder (klasse – dokumentations-hjælper)
 
-    run_dir: Optional[Path] = None
-    record_context: Optional[BrowserContext] = None
-    record_task: Optional[asyncio.Task] = None
-    tracing_started: bool = False
+    Ansvar:
+    - Screenshots (print-screen)
+    - Video (start/stop)
+    - Trace (debug)
+    - Auto-stop
+    - Exception-sikker lukning
+    - Lazy mappe-oprettelse
+    - SharePoint-upload (SENERE – kommenteret)
+    """
 
-    def __post_init__(self):
-        self.base_dir.mkdir(exist_ok=True)
-        if self.debug:
-            self.run_dir = self._next_run_dir()
-            self.run_dir.mkdir()
+    BASE_PATH = Path("test_local_playwright")
 
-    def _next_run_dir(self) -> Path:
-        runs = [p for p in self.base_dir.iterdir() if p.is_dir() and p.name.startswith("run_")]
-        nums = []
-        for r in runs:
-            try:
-                nums.append(int(r.name.replace("run_", "")))
-            except ValueError:
-                pass
-        return self.base_dir / f"run_{max(nums, default=0)+1}"
+    # ---------------------------
+    # SHAREPOINT (KUN DOKUMENTATION)
+    # ---------------------------
+    # DEFAULT_SITE = "Automatisering"
+    #
+    # TANKEN HER:
+    # - GitHub repo-navn → SharePoint hovedmappe
+    # - run_name → undermappe
+    #
+    # Eksempel:
+    # Automatisering/
+    # └── advis-vedr-arbejdsskader/
+    #     └── 20-12-2026 10-00 (session 111)/
+    #
+    # SENERE:
+    # if files:
+    #     drive_id, folder_id, file_urls = upload_temp_files(
+    #         sp_client,
+    #         site_name,
+    #         BASE_PATH,
+    #         files
+    #     )
 
-    def _ts(self) -> str:
-        return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    def __init__(self, browser_session: BrowserSession):
+        self.browser_session = browser_session
 
-    async def screenshot(self, page: Page, name: str) -> Path:
-        target = self.run_dir or self.base_dir
-        target.mkdir(exist_ok=True)
-        path = target / f"{name}_{self._ts()}.png"
+        self.run_dir: Path | None = None
+        self.record_context: BrowserContext | None = None
+        self.record_task: asyncio.Task | None = None
+        self.tracing_started = False
+
+    # ---------------------------
+    # INTERN: opret mappe lazy
+    # ---------------------------
+    def _ensure_run_dir(self):
+        if self.run_dir:
+            return
+
+        run_name = self.browser_session.run_name
+        if not run_name:
+            raise RuntimeError("BrowserSession er ikke startet")
+
+        self.run_dir = self.BASE_PATH / run_name
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---------------------------
+    # SCREENSHOT (ALTID TILLADT)
+    # ---------------------------
+    async def screenshot(self, page: Page, name: str):
+        """
+        Tager print-screen
+        Virker både med og uden debug
+        """
+        self._ensure_run_dir()
+
+        safe_name = name.replace(" ", "_").replace("/", "_")
+        path = self.run_dir / f"{safe_name}.png"
+
         await page.screenshot(path=str(path), full_page=True)
         return path
 
-    async def start_recording(self, browser: Browser, timeout_seconds: int = 10) -> BrowserContext:
-        target = self.run_dir or self.base_dir
+    # ---------------------------
+    # START VIDEO + TRACE
+    # ---------------------------
+    async def start_recording(self, timeout_seconds: int = 10):
+        """
+        Starter video + tracing
+        """
+        self._ensure_run_dir()
 
-        self.record_context = await browser.new_context(
-            record_video_dir=str(target)
+        self.record_context = await self.browser_session.browser.new_context(
+            record_video_dir=str(self.run_dir)
         )
 
-        # Tracing er sekundært
+        # Tracing (debug – ekstra info)
         await self.record_context.tracing.start(
             screenshots=True,
             snapshots=True,
@@ -59,14 +102,17 @@ class PlaywrightRunRecorder:
         )
         self.tracing_started = True
 
+        # Auto-stop timer
         self.record_task = asyncio.create_task(
             self._auto_stop(timeout_seconds)
         )
 
         return self.record_context
 
-    async def stop_recording_clean(self, name: str):
-        """Bruges kun når alt gik godt"""
+    # ---------------------------
+    # STOP (NORMAL)
+    # ---------------------------
+    async def stop_recording_clean(self, name: str = "finished"):
         if not self.record_context:
             return
 
@@ -75,7 +121,7 @@ class PlaywrightRunRecorder:
 
         if self.tracing_started:
             try:
-                trace_path = (self.run_dir or self.base_dir) / f"{name}_trace.zip"
+                trace_path = self.run_dir / f"{name}_trace.zip"
                 await self.record_context.tracing.stop(path=str(trace_path))
             except Exception:
                 pass
@@ -83,15 +129,24 @@ class PlaywrightRunRecorder:
         await self.record_context.close()
         self.record_context = None
 
+    # ---------------------------
+    # STOP VED EXCEPTION
+    # ---------------------------
     async def stop_recording_on_error(self):
-        """Bruges ved exception – VIDEO er vigtigst"""
+        """
+        Bruges ved fejl:
+        - Video er vigtigst
+        - Ingen tracing.stop (kan give 0 KB video)
+        """
         if not self.record_context:
             return
 
-        # ❗ VIGTIGT: Ingen tracing.stop her
         await self.record_context.close()
         self.record_context = None
 
+    # ---------------------------
+    # AUTO STOP
+    # ---------------------------
     async def _auto_stop(self, seconds: int):
         try:
             await asyncio.sleep(seconds)
