@@ -1,4 +1,4 @@
-from playwright.async_api import async_playwright, Page, Error
+from playwright.async_api import async_playwright, Page
 from datetime import datetime
 import os
 import subprocess
@@ -10,16 +10,17 @@ class BrowserSession:
     """
     BrowserSession (klasse – skabelon for objekt)
 
-    Ansvar:
-    - Starte Playwright
-    - Holde run-metadata
-    - Holde debug-tilstand
-    - EJE RunRecorder
+    STANDARD-ANSVAR (RPA):
+    - Én browser pr. job
+    - Mange items pr. browser
+    - Luk fane = item færdig
+    - Luk session = job færdig / fatal fejl
     """
 
-    def __init__(self, headless: bool = True, debug: bool = False):
+    def __init__(self, headless: bool = True, debug: bool = False, force_new: bool = False):
         self.headless = headless
-        self.debug = debug  # ✅ debug gemmes ét sted
+        self.debug = debug
+        self.force_new = force_new  # (bruges senere – forberedt nu)
 
         # Playwright
         self.pw = None
@@ -32,42 +33,95 @@ class BrowserSession:
         self.run_timestamp = None
         self.run_name = None
 
-        # Recorder
+        # Recorder (intern – RPA-kode må ikke bruge den)
         self.recorder = None
 
+    # -------------------------------------------------
+    # START BROWSERSESSION
+    # -------------------------------------------------
     async def start(self):
+        """
+        Starter browser og recorder.
+        """
         self.pw = await async_playwright().start()
         self.browser = await self.pw.chromium.launch(headless=self.headless)
 
-        # Metadata
         self.github_repo_name = self._find_github_repo_name()
         self.session_id = self._find_session_id()
         self.run_timestamp = self._generate_timestamp()
         self.run_name = self._generate_run_name()
 
-        # ✅ Recorder får debug-tilstand her
         self.recorder = PlaywrightRunRecorder(
             browser_session=self,
             debug=self.debug
         )
 
+    # -------------------------------------------------
+    # NY FANE
+    # -------------------------------------------------
     async def new_page(self) -> Page:
-        self.context = await self.browser.new_context()
+        """
+        Opretter ny browser-fane (Page).
+        """
+        if not self.context:
+            self.context = await self.browser.new_context()
         return await self.context.new_page()
 
-    async def close(self):
+    # -------------------------------------------------
+    # LUK ÉN FANE (STANDARD ITEM-AFSLUTNING)
+    # -------------------------------------------------
+    async def close_page(self, page: Page):
+        """
+        Lukker én fane korrekt:
+        - stopper recorder (hvis aktiv)
+        - lukker fanen
+        """
         if self.recorder:
-            await self.recorder.finalize_before_browser_close()
+            await self.recorder._finalize("page_closed")  # intern oprydning
+
+        if not page.is_closed():
+            await page.close()
+
+    # -------------------------------------------------
+    # LUK ALLE ANDRE FANER
+    # -------------------------------------------------
+    async def close_other_pages(self, keep_page: Page):
+        """
+        Lukker alle faner undtagen den angivne.
+        """
+        if not self.context:
+            return
+
+        for p in self.context.pages:
+            if p != keep_page and not p.is_closed():
+                await p.close()
+
+    # -------------------------------------------------
+    # LUK ALT (JOB FÆRDIG / FATAL FEJL)
+    # -------------------------------------------------
+    async def close(self):
+        """
+        Lukker ALT korrekt:
+        - stopper recorder
+        - lukker alle faner
+        - lukker browser
+        - stopper Playwright
+        """
+        if self.recorder:
+            await self.recorder._finalize("session_closed")
 
         if self.context:
             await self.context.close()
+
         if self.browser:
             await self.browser.close()
+
         if self.pw:
             await self.pw.stop()
 
-    # ---------- metadata helpers ----------
-
+    # -------------------------------------------------
+    # METADATA HELPERS
+    # -------------------------------------------------
     def _generate_timestamp(self) -> str:
         return datetime.now().strftime("%d-%m-%Y %H-%M")
 
