@@ -77,7 +77,7 @@ class BrowserSession:
         - lukker fanen
         """
         if self.recorder:
-            await self.recorder._finalize("page_closed")  # intern oprydning
+            await self.recorder._close_recording("page_closed")  # intern oprydning
 
         if not page.is_closed():
             await page.close()
@@ -108,7 +108,7 @@ class BrowserSession:
         - stopper Playwright
         """
         if self.recorder:
-            await self.recorder._finalize("session_closed")
+            await self.recorder._close_recording("session_closed")
 
         if self.context:
             await self.context.close()
