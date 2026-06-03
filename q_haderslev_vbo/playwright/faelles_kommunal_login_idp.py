@@ -79,7 +79,7 @@ async def login_via_faelles_kommunal_idp(
     await session.recorder.screenshot(page, "IDP_før_login")
 
     # Login flow
-    await _login_robot(page)
+    await _login_robot(page, session)
 
     # ✅ FIX: async screenshot → SKAL awaites
     await session.recorder.screenshot(page, "IDP_efter_login")
