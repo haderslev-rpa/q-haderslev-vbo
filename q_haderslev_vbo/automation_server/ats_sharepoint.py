@@ -37,25 +37,40 @@ def hent_sharepoint_list_item_til_box(
     return sharepoint_data
 
 
-def gem_sharepoint_list_item_til_box(
+def gem_sharepoint_liste_item_fra_box(
     site_name,
     list_name,
     sharepoint_data,
     *,
-    item
+    item,
+    robot_kommentar: str | None = None
 ):
     """
-    Opretter/opdaterer SharePoint list item
-    og overskriver item.data["box"]["sharepoint"].
+    Gemmer SharePoint liste-item FRA box TIL SharePoint.
+
+    - Læser data fra box.sharepoint
+    - Gemmer i SharePoint (create/update)
+    - Overskriver box.sharepoint med frisk data
+    - Appender robot kommentar hvis angivet
     """
 
+    # Kopiér data (så vi ikke muterer box direkte)
+    payload = dict(sharepoint_data)
+
+    # Tilføj robot kommentar hvis angivet
+    if robot_kommentar:
+        payload["Robot kommentar"] = robot_kommentar
+
+    # Gem i SharePoint (create/update)
     saved_sharepoint_data = create_update_sharepoint_list_item(
         site_name=site_name,
         list_name=list_name,
-        sharepoint_data=sharepoint_data
+        sharepoint_data=payload
     )
 
+    # Overskriv box.sharepoint
     _overskriv_sharepoint_i_box(item, saved_sharepoint_data)
+
     return saved_sharepoint_data
 
 
