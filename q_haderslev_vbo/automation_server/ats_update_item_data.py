@@ -6,6 +6,7 @@ def update_item_data(
     data_json: dict,
     *,
     box_updates: dict = None,
+    box_field: str = None,  # ✅ NY: Angiver hvilken property i "box" data skal placeres under (fx "sharepoint")
     status: str = None,
     status_code: str = None,
     state: str = None,
@@ -19,6 +20,11 @@ def update_item_data(
     Krav:
     - Hvis update=True → SKAL item angives
     - Hvis item ikke angives → kræver update=False
+
+    box_field:
+    - Bruges hvis data ikke skal placeres direkte i "box", men under en property
+    - Eksempel: box_field="sharepoint" → data_json["box"]["sharepoint"] = {...}
+    - Hvis ikke angivet → data tilføjes direkte til "box" (bagudkompatibel)
 
     Eksempel:
     
@@ -52,7 +58,14 @@ update_item_data(
 
     # 2. Box
     if box_updates:
-        data_json["box"].update(box_updates)
+        if box_field:
+            # ✅ Sørger for nested struktur (fx "sharepoint")
+            if not isinstance(data_json["box"].get(box_field), dict):
+                data_json["box"][box_field] = {}
+
+            data_json["box"][box_field].update(box_updates)
+        else:
+            data_json["box"].update(box_updates)
 
     # 3. Status
     if status or status_code:
