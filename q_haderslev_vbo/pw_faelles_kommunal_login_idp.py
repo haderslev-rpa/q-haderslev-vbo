@@ -1,5 +1,5 @@
 from automation_server_client import AutomationServer, Credential
-from q_haderslev_vbo.playwright.browser_session import BrowserSession
+from q_haderslev_vbo.browser_session import BrowserSession
 # ==============================
 # Konstanter
 # ==============================

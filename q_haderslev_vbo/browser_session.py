@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 import subprocess
 
-from q_haderslev_vbo.playwright.playwright_run_recorder import PlaywrightRunRecorder
+from q_haderslev_vbo.pw_run_recorder import PlaywrightRunRecorder
 
 
 class BrowserSession:
