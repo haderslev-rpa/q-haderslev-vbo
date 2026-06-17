@@ -12,7 +12,7 @@ from playwright.async_api import Page
 @dataclass
 class PlaywrightDebugHelper:
     debug: bool = True
-    base_dir: Path = Path("test_local_playwright")
+    base_dir: Path = Path("tests_local_playwright")
     run_dir: Optional[Path] = None
 
     def __post_init__(self):
@@ -107,7 +107,7 @@ from playwright.sync_api import Page
 @dataclass  # decorator (ændrer klasse)
 class PlaywrightDebugHelper:  # klasse (skabelon for objekter)
     debug: bool = True  # bool (sand/falsk)
-    base_dir: Path = Path("test_local_playwright")  # Path (debug-rodmappe)
+    base_dir: Path = Path("tests_local_playwright")  # Path (debug-rodmappe)
     run_dir: Optional[Path] = None  # Optional (kan være None)
 
     def __post_init__(self):  # metode (kører efter init)
