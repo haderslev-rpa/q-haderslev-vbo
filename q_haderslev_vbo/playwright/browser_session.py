@@ -49,10 +49,19 @@ class BrowserSession:
     # -------------------------------------------------
     async def start(self):
         """
-        Starter browser
+        Starter browser med gode standard settings (indstillinger)
         """
+
         self.pw = await async_playwright().start()
-        self.browser = await self.pw.chromium.launch(headless=self.headless)
+
+        self.browser = await self.pw.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-infobars",
+                "--disable-notifications",
+                "--disable-extensions",
+            ]
+        )
 
         self.github_repo_name = self._find_github_repo_name()
         self.session_id = self._find_session_id()
@@ -69,21 +78,23 @@ class BrowserSession:
     # -------------------------------------------------
     async def new_page(self) -> Page:
         """
-        Opretter ny page (browser fane)
-
-        ✅ Video hvis debug=True AND video=True
+        Opretter ny page med RPA-standard settings
         """
 
         if not self.context:
             run_dir = Path("tests_local_playwright") / self.run_name
             run_dir.mkdir(parents=True, exist_ok=True)
 
+            context_kwargs = {
+                "viewport": {"width": 1920, "height": 1080},  # ✅ stabil layout
+                "ignore_https_errors": True,                  # ✅ undgå SSL fejl
+                "locale": "da-DK",                            # ✅ dansk UI
+            }
+
             if self.debug and self.video:
-                self.context = await self.browser.new_context(
-                    record_video_dir=str(run_dir)
-                )
-            else:
-                self.context = await self.browser.new_context()
+                context_kwargs["record_video_dir"] = str(run_dir)
+
+            self.context = await self.browser.new_context(**context_kwargs)
 
         return await self.context.new_page()
 
