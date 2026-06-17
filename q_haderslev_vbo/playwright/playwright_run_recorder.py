@@ -10,7 +10,7 @@ class PlaywrightRunRecorder:
     ⚠️ Må IKKE bruges direkte i RPA-kode
     """
 
-    BASE_PATH = Path("test_local_playwright")
+    BASE_PATH = Path("tests_local_playwright")
 
     def __init__(self, browser_session, debug: bool):
         self.browser_session = browser_session
