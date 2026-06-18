@@ -1,4 +1,4 @@
-# q_haderslev_vbo/automation_server/ats_sharepoint.py
+# SKAL FLYTTES OVER TIL SHAREPIONT API REPOSITORY
 
 """
 AUTOMATION SERVER WRAPPER FOR SHAREPOINT

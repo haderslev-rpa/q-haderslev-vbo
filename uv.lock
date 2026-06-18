@@ -316,25 +316,18 @@ wheels = [
 [[package]]
 name = "q-haderslev-vbo"
 version = "0.1.2"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "automation-server-client" },
     { name = "playwright" },
-    { name = "q-sharepoint-api" },
+    { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "automation-server-client", git = "https://github.com/odense-rpa/automation-server-client.git?tag=v0.3.0" },
     { name = "playwright", specifier = ">=1.59.0" },
-    { name = "q-sharepoint-api", git = "https://github.com/haderslev-rpa/q-sharepoint-api.git?rev=main" },
-]
-
-[[package]]
-name = "q-sharepoint-api"
-version = "0.1.0"
-source = { git = "https://github.com/haderslev-rpa/q-sharepoint-api.git?rev=main#d70f17846e936cab3170ce1c114313a217ee4865" }
-dependencies = [
-    { name = "automation-server-client" },
-    { name = "requests" },
+    { name = "requests", specifier = ">=2.31.0" },
 ]
 
 [[package]]

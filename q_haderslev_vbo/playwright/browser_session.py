@@ -101,12 +101,13 @@ class BrowserSession:
     # -------------------------------------------------
     # SCREENSHOT (nem API)
     # -------------------------------------------------
-    async def screenshot(self, page: Page, name: str):
+    async def screenshot(self, page: Page, name: str, always: bool = False):
         """
         Wrapper til screenshot (billede)
         """
+
         if self.recorder:
-            await self.recorder.screenshot(page, name)
+            await self.recorder.screenshot(page, name, always=always)
 
     # -------------------------------------------------
     # CLOSE PAGE
