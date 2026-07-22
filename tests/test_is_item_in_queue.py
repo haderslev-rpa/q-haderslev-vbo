@@ -35,7 +35,11 @@ def run_test() -> None:
         in_progress=True,
         new=False,
         pending_user_action=False,
-    )
+        start_datetime="2025-07-01T00:00:00Z",
+        end_datetime="2026-07-31T23:59:59.999999Z",
+        updated_at=False,
+        )
+
 
     print("")
     print(f"Findes item: {item_exists}")
