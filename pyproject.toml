@@ -6,6 +6,7 @@ dependencies = [
     "playwright>=1.59.0",
     "automation-server-client",
     "requests>=2.31.0",
+    "psycopg2-binary",
 ]
 [tool.uv.sources]
 automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client.git", tag = "v0.3.0" }
