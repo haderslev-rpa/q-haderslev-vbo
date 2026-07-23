@@ -8,14 +8,9 @@ Databaserækken leverer automatisk item-id, workqueue-id og reference.
 Den kaldende proces skal ikke angive en workqueue.
 """
 
-import os
-
-import httpx
-
 from automation_server_client import (
     AutomationServer,
     WorkItemStatus,
-    Workqueue,
 )
 
 
@@ -67,43 +62,72 @@ def get_workqueue_object_by_id(
     workqueue_id: int | str,
 ):
     """
-    Returnerer et Workqueue-objekt for det angivne id.
+    Returnerer et klientklart Workqueue-objekt for det ønskede queue-id.
 
-    Hvis processens environment allerede peger på den korrekte workqueue,
-    genbruges ats.workqueue(). Ellers hentes workqueue-data via API'et.
+    Klientens interne URL, token og konfiguration sidder allerede på det
+    Workqueue-objekt, som ats.workqueue() opretter fra environment.
+    Objektet bruges derfor som teknisk skabelon og kopieres med itemets
+    rigtige workqueue-id fra databasen.
     """
     validated_workqueue_id = _validate_positive_int(
         workqueue_id,
         "workqueue_id",
     )
 
-    environment_workqueue = None
-
     try:
         environment_workqueue = ats.workqueue()
-    except Exception:
-        environment_workqueue = None
+    except Exception as error:
+        raise RuntimeError(
+            "Processen mangler en gyldig teknisk workqueue i environment. "
+            "Angiv en monitor-kø i Automation Server-processens "
+            "workqueue-felt eller ATS_WORKQUEUE_ID ved lokal debug."
+        ) from error
 
-    if (
-        environment_workqueue is not None
-        and environment_workqueue.id is not None
-        and int(environment_workqueue.id) == validated_workqueue_id
-    ):
+    if environment_workqueue is None:
+        raise RuntimeError(
+            "ats.workqueue() returnerede ingen workqueue."
+        )
+
+    if environment_workqueue.id is None:
+        raise RuntimeError(
+            "Environment-workqueuen mangler id."
+        )
+
+    if int(environment_workqueue.id) == validated_workqueue_id:
         return environment_workqueue
 
-    base_url = _get_api_base_url(ats)
-    response = httpx.get(
-        f"{base_url}/workqueues/{validated_workqueue_id}",
-        headers=ats.config.auth_headers(),
-        timeout=30,
+    return _copy_workqueue_with_new_id(
+        environment_workqueue,
+        validated_workqueue_id,
     )
-    response.raise_for_status()
-    payload = response.json()
 
-    if hasattr(Workqueue, "model_validate"):
-        return Workqueue.model_validate(payload)
 
-    return Workqueue(**payload)
+def _copy_workqueue_with_new_id(
+    workqueue,
+    workqueue_id: int,
+):
+    """Kopierer workqueuen og bevarer klientens interne API-konfiguration."""
+    if hasattr(workqueue, "model_copy"):
+        copied_workqueue = workqueue.model_copy(
+            update={"id": workqueue_id},
+            deep=False,
+        )
+    elif hasattr(workqueue, "copy"):
+        copied_workqueue = workqueue.copy(
+            update={"id": workqueue_id},
+            deep=False,
+        )
+    else:
+        raise TypeError(
+            "Workqueue-objektet kan ikke kopieres med et nyt id."
+        )
+
+    if copied_workqueue.id is None or int(copied_workqueue.id) != workqueue_id:
+        raise RuntimeError(
+            "Den kopierede workqueue fik ikke det forventede id."
+        )
+
+    return copied_workqueue
 
 
 def refresh_workitem_object_by_database_id(
@@ -122,20 +146,6 @@ def refresh_workitem_object_by_database_id(
         database_item,
         required_status=required_status,
     )
-
-
-def _get_api_base_url(ats) -> str:
-    configured_url = (
-        getattr(ats.config, "url", None)
-        or os.getenv("ATS_URL")
-    )
-
-    if not configured_url:
-        raise RuntimeError(
-            "Automation Server URL mangler i config og ATS_URL."
-        )
-
-    return str(configured_url).rstrip("/")
 
 
 def _normalize_to_list(result) -> list:
