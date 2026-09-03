@@ -18,30 +18,110 @@ IDP_GUID = None
 # Intern robot-login (ASYNC)
 # ==============================
 async def _login_robot(page, session):
-    await page.wait_for_selector("#customerid", state="attached", timeout=60000)
+    """
+    Logger ind via FK IDP robotformularen.
 
-    robot_btn = page.locator("button[data-login-method='login-robot']")
+    Output:
+    Funktionen returnerer ikke noget.
 
-    if await robot_btn.count() > 0 and await robot_btn.is_visible():
+    Ved succes er browseren sendt videre fra IDP-siden.
+    Ved fejl tages et screenshot, og RuntimeError bliver kastet.
+    """
+
+    # Vent på at IDP-siden har indlæst formularen.
+    await page.wait_for_selector(
+        "#customerid",
+        state="attached",
+        timeout=60_000,
+    )
+
+    robot_btn = page.locator(
+        "button[data-login-method='login-robot']"
+    )
+
+    if (
+        await robot_btn.count() > 0
+        and await robot_btn.is_visible()
+    ):
         await robot_btn.click()
 
-    await page.wait_for_selector("#customerid:visible", timeout=60000)
+        # Giv robotformularen tid til at blive vist efter klik.
+        await page.wait_for_timeout(2_000)
 
-    await page.fill("#customerid", CUSTOMER_ID)
-    await page.fill("#robotupn", IDP_GUID)
-    await page.fill("#apikey", API_KEY)
+    # Vent på at inputfeltet er synligt.
+    await page.wait_for_selector(
+        "#customerid",
+        state="visible",
+        timeout=60_000,
+    )
 
-    # Submit form
-    await page.evaluate("() => document.querySelector('#robotForm').submit()")
+    # Udfyld loginoplysninger.
+    await page.fill(
+        "#customerid",
+        CUSTOMER_ID,
+    )
 
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_load_state("networkidle")
+    await page.fill(
+        "#robotupn",
+        IDP_GUID,
+    )
 
-    # Valider login
-    if await page.locator("#robotForm").count() > 0:
-        # ✅ FIX: async screenshot → SKAL awaites
-        await session.recorder.screenshot(page, "FEJL_login")
-        raise RuntimeError("❌ Login på FK IDP fejlede")
+    await page.fill(
+        "#apikey",
+        API_KEY,
+    )
+
+    # Lille pause så IDP-siden kan registrere inputværdierne.
+    await page.wait_for_timeout(1_000)
+
+    # Indsend formularen.
+    await page.evaluate(
+        "() => document.querySelector('#robotForm').submit()"
+    )
+
+    print("⏳ Login indsendt. Venter på viderestilling...")
+
+    # FASIT og IDP kan være langsomme efter submit.
+    await page.wait_for_timeout(10_000)
+
+    # Vent på eventuel navigation.
+    try:
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=60_000,
+        )
+    except Exception:
+        print(
+            "⚠️ Siden nåede ikke domcontentloaded inden timeout. "
+            "Kontrollerer loginresultatet alligevel."
+        )
+
+    # Ekstra buffer til langsom viderestilling fra IDP til FASIT.
+    await page.wait_for_timeout(10_000)
+
+    print(f"🌐 URL efter login: {page.url}")
+
+    robot_form = page.locator("#robotForm")
+
+    # Det er ikke en fejl, at formularen stadig findes skjult i DOM'en.
+    # Det er kun en fejl, hvis formularen fortsat er synlig.
+    robot_form_visible = False
+
+    if await robot_form.count() > 0:
+        robot_form_visible = await robot_form.is_visible()
+
+    if robot_form_visible:
+        await session.recorder.screenshot(
+            page,
+            "FEJL_login",
+        )
+
+        raise RuntimeError(
+            "❌ Login på FK IDP fejlede. "
+            "Robotformularen er stadig synlig efter ventetiden."
+        )
+
+    print("✅ FK IDP login gennemført")
 
 
 # ==============================
