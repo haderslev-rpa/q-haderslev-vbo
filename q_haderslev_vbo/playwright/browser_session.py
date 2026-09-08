@@ -1,21 +1,56 @@
-from playwright.async_api import async_playwright, Page
 from datetime import datetime
 import os
-import subprocess
 from pathlib import Path
+import subprocess
+from typing import TypedDict
 
-from q_haderslev_vbo.playwright.playwright_run_recorder import PlaywrightRunRecorder
+from playwright.async_api import (
+    BrowserContext,
+    Page,
+    async_playwright,
+)
+
+from q_haderslev_vbo.playwright.playwright_run_recorder import (
+    PlaywrightRunRecorder,
+)
+
+
+class HttpCredentials(TypedDict):
+    """
+    Struktur for HTTP-loginoplysninger.
+
+    Output:
+        Bruges som input til BrowserSession.
+
+    Eksempel:
+        {
+            "username": "brugernavn",
+            "password": "adgangskode",
+        }
+    """
+
+    username: str
+    password: str
 
 
 class BrowserSession:
     """
-    BrowserSession (klasse – skabelon for objekt)
+    BrowserSession er den fælles Playwright-browser-session.
 
     Ansvar:
     - Browser lifecycle
-    - Context (med evt. video)
-    - Pages
-    - Simple helper-metoder
+    - BrowserContext med eventuelle HTTP-credentials
+    - Videooptagelse ved lokal debugging
+    - Oprettelse og lukning af sider
+    - Screenshots via PlaywrightRunRecorder
+    - Metadata om proceskørslen
+
+    HTTP-credentials:
+        Hvis http_credentials bliver sendt med, anvendes oplysningerne,
+        når Playwright opretter BrowserContext.
+
+        Hvis http_credentials er None, bliver BrowserContext oprettet
+        uden HTTP-loginoplysninger.
     """
 
     def __init__(
@@ -23,17 +58,56 @@ class BrowserSession:
         headless: bool = True,
         debug: bool = False,
         video: bool = False,
-        force_new: bool = False
+        force_new: bool = False,
+        http_credentials: HttpCredentials | None = None,
     ):
+        """
+        Opretter en BrowserSession.
+
+        Args:
+            headless:
+                True starter browseren uden synligt vindue.
+                False åbner et synligt browservindue.
+
+            debug:
+                Aktiverer lokal dokumentation såsom screenshots.
+
+            video:
+                Aktiverer video, når både debug og video er True.
+
+            force_new:
+                Bevares som indstilling til processer, der kræver
+                en ny browsersession.
+
+            http_credentials:
+                Valgfrit dictionary med HTTP-brugernavn og adgangskode.
+
+                Eksempel:
+                    {
+                        "username": "brugernavn",
+                        "password": "adgangskode",
+                    }
+
+                Hvis værdien er None, sendes der ingen HTTP-credentials
+                til Playwright.
+
+        Output:
+            Opretter et BrowserSession-objekt.
+
+            Browseren startes først, når start() kaldes.
+            BrowserContext oprettes først, når new_page() kaldes.
+        """
+
         self.headless = headless
         self.debug = debug
         self.video = video
         self.force_new = force_new
+        self.http_credentials = http_credentials
 
         # Playwright
         self.pw = None
         self.browser = None
-        self.context = None
+        self.context: BrowserContext | None = None
 
         # Metadata
         self.github_repo_name = None
@@ -41,27 +115,44 @@ class BrowserSession:
         self.run_timestamp = None
         self.run_name = None
 
-        # Recorder (kun screenshots)
+        # Recorder bruges blandt andet til screenshots.
         self.recorder = None
 
     # -------------------------------------------------
     # START
     # -------------------------------------------------
-    async def start(self):
+    async def start(self) -> None:
         """
-        Starter browser med gode standard settings (indstillinger)
+        Starter Playwright og Chromium.
+
+        Output:
+            Starter browseren, men opretter endnu ikke en side.
+
+            BrowserContext bliver oprettet ved det første kald til
+            new_page(). Det er dér eventuelle HTTP-credentials bliver
+            sendt til Playwright.
         """
+
+        if self.pw is not None or self.browser is not None:
+            raise RuntimeError(
+                "BrowserSession er allerede startet."
+            )
 
         self.pw = await async_playwright().start()
 
-        self.browser = await self.pw.chromium.launch(
-            headless=self.headless,
-            args=[
-                "--disable-infobars",
-                "--disable-notifications",
-                "--disable-extensions",
-            ]
-        )
+        try:
+            self.browser = await self.pw.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--disable-infobars",
+                    "--disable-notifications",
+                    "--disable-extensions",
+                ],
+            )
+        except Exception:
+            await self.pw.stop()
+            self.pw = None
+            raise
 
         self.github_repo_name = self._find_github_repo_name()
         self.session_id = self._find_session_id()
@@ -70,7 +161,7 @@ class BrowserSession:
 
         self.recorder = PlaywrightRunRecorder(
             browser_session=self,
-            debug=self.debug
+            debug=self.debug,
         )
 
     # -------------------------------------------------
@@ -78,41 +169,126 @@ class BrowserSession:
     # -------------------------------------------------
     async def new_page(self) -> Page:
         """
-        Opretter ny page med RPA-standard settings
+        Opretter en ny Playwright-side med RPA-standardindstillinger.
+
+        Output:
+            Returnerer et Playwright Page-objekt.
+
+            Den første gang funktionen kaldes, bliver BrowserContext
+            oprettet. Hvis HTTP-credentials er angivet på sessionen,
+            bliver credentials sendt med ved oprettelsen.
+
+            Efterfølgende kald opretter nye sider i den samme context.
         """
 
-        if not self.context:
-            run_dir = Path("tests_local_playwright") / self.run_name
-            run_dir.mkdir(parents=True, exist_ok=True)
+        if self.browser is None:
+            raise RuntimeError(
+                "BrowserSession er ikke startet. "
+                "Kald await session.start() før session.new_page()."
+            )
+
+        if self.context is None:
+            run_dir = (
+                Path("tests_local_playwright")
+                / self.run_name
+            )
+
+            run_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
             context_kwargs = {
-                "viewport": {"width": 1920, "height": 1080},  # ✅ stabil layout
-                "ignore_https_errors": True,                  # ✅ undgå SSL fejl
-                "locale": "da-DK",                            # ✅ dansk UI
+                # Stabilt layout til RPA-processer.
+                "viewport": {
+                    "width": 1920,
+                    "height": 1080,
+                },
+
+                # Undgå fejl fra interne SSL-certifikater.
+                "ignore_https_errors": True,
+
+                # Dansk brugergrænseflade, hvor det understøttes.
+                "locale": "da-DK",
             }
 
             if self.debug and self.video:
-                context_kwargs["record_video_dir"] = str(run_dir)
+                context_kwargs["record_video_dir"] = str(
+                    run_dir
+                )
 
-            self.context = await self.browser.new_context(**context_kwargs)
+            # HTTP-credentials kan kun angives, når contexten
+            # oprettes. Hvis værdien er None, sendes intet med.
+            if self.http_credentials is not None:
+                self._validate_http_credentials(
+                    self.http_credentials
+                )
+
+                context_kwargs["http_credentials"] = (
+                    self.http_credentials
+                )
+
+            self.context = await self.browser.new_context(
+                **context_kwargs
+            )
 
         return await self.context.new_page()
 
     # -------------------------------------------------
-    # SCREENSHOT (nem API)
+    # SCREENSHOT
     # -------------------------------------------------
-    async def screenshot(self, page: Page, name: str, always: bool = False):
+    async def screenshot(
+        self,
+        page: Page,
+        name: str,
+        always: bool = False,
+    ) -> None:
         """
-        Wrapper til screenshot (billede)
+        Gemmer et screenshot via PlaywrightRunRecorder.
+
+        Args:
+            page:
+                Den Playwright-side, der skal fotograferes.
+
+            name:
+                Navnet på screenshotet.
+
+            always:
+                Hvis True, forsøges screenshot gemt uafhængigt af den
+                normale debug-indstilling.
+
+        Output:
+            Funktionen returnerer ikke et resultat.
+
+            Screenshotet håndteres af PlaywrightRunRecorder.
         """
 
         if self.recorder:
-            await self.recorder.screenshot(page, name, always=always)
+            await self.recorder.screenshot(
+                page,
+                name,
+                always=always,
+            )
 
     # -------------------------------------------------
     # CLOSE PAGE
     # -------------------------------------------------
-    async def close_page(self, page: Page):
+    async def close_page(
+        self,
+        page: Page,
+    ) -> None:
+        """
+        Lukker én Playwright-side.
+
+        Args:
+            page:
+                Den side, der skal lukkes.
+
+        Output:
+            Funktionen returnerer ikke et resultat.
+            En allerede lukket side ignoreres.
+        """
+
         if not page.is_closed():
             await page.close()
 
@@ -122,70 +298,192 @@ class BrowserSession:
     async def close_all_other_tabs(
         self,
         active_page: Page,
-        print_log: bool = False
+        print_log: bool = False,
     ) -> None:
         """
-        Lukker alle faner undtagen aktiv
+        Lukker alle faner undtagen den aktive side.
+
+        Args:
+            active_page:
+                Den side, som skal forblive åben.
+
+            print_log:
+                Hvis True, udskrives antallet af faner før og efter.
+
+        Output:
+            Funktionen returnerer ikke et resultat.
         """
 
-        if not self.context:
+        if self.context is None:
             return
 
         if print_log:
-            print(f"[Playwright] Antal faner FØR cleanup: {len(self.context.pages)}")
+            print(
+                "[Playwright] Antal faner FØR cleanup: "
+                f"{len(self.context.pages)}"
+            )
 
-        for p in self.context.pages:
-            if p != active_page and not p.is_closed():
+        for page in self.context.pages:
+            if (
+                page != active_page
+                and not page.is_closed()
+            ):
                 try:
-                    await p.close()
+                    await page.close()
                 except Exception:
                     pass
 
         if print_log:
-            print(f"[Playwright] Antal faner EFTER cleanup: {len(self.context.pages)}")
+            print(
+                "[Playwright] Antal faner EFTER cleanup: "
+                f"{len(self.context.pages)}"
+            )
 
     # -------------------------------------------------
     # CLOSE SESSION
     # -------------------------------------------------
-    async def close(self):
+    async def close(self) -> None:
         """
-        Lukker ALT
-        ✅ Gemmer video automatisk
+        Lukker BrowserContext, browser og Playwright.
+
+        Output:
+            Funktionen returnerer ikke et resultat.
+
+            Hvis video er aktiveret, færdiggør Playwright videoen,
+            når BrowserContext bliver lukket.
         """
 
-        if self.context:
-            await self.context.close()
+        if self.context is not None:
+            try:
+                await self.context.close()
+            finally:
+                self.context = None
 
-        if self.browser:
-            await self.browser.close()
+        if self.browser is not None:
+            try:
+                await self.browser.close()
+            finally:
+                self.browser = None
 
-        if self.pw:
-            await self.pw.stop()
+        if self.pw is not None:
+            try:
+                await self.pw.stop()
+            finally:
+                self.pw = None
+
+    # -------------------------------------------------
+    # VALIDATION
+    # -------------------------------------------------
+    @staticmethod
+    def _validate_http_credentials(
+        http_credentials: HttpCredentials,
+    ) -> None:
+        """
+        Kontrollerer HTTP-loginoplysningerne.
+
+        Args:
+            http_credentials:
+                Dictionary med username og password.
+
+        Output:
+            Funktionen returnerer ikke data, hvis begge værdier findes.
+
+        Raises:
+            ValueError:
+                Hvis username eller password mangler.
+
+        Sikkerhed:
+            Loginoplysningerne bliver ikke udskrevet.
+        """
+
+        username = http_credentials.get("username")
+        password = http_credentials.get("password")
+
+        if not username:
+            raise ValueError(
+                "http_credentials mangler 'username'."
+            )
+
+        if not password:
+            raise ValueError(
+                "http_credentials mangler 'password'."
+            )
 
     # -------------------------------------------------
     # HELPERS
     # -------------------------------------------------
     def _generate_timestamp(self) -> str:
-        return datetime.now().strftime("%d-%m-%Y %H-%M")
+        """
+        Opretter tidspunktet for kørslen.
+
+        Output:
+            Returnerer et tidspunkt som tekst på formen:
+            '08-09-2026 14-30'.
+        """
+
+        return datetime.now().strftime(
+            "%d-%m-%Y %H-%M"
+        )
 
     def _generate_run_name(self) -> str:
+        """
+        Opretter navnet på den aktuelle kørsel.
+
+        Output:
+            Returnerer tidspunkt og eventuelt automation session-id.
+        """
+
         if self.session_id:
-            return f"{self.run_timestamp} (session {self.session_id})"
+            return (
+                f"{self.run_timestamp} "
+                f"(session {self.session_id})"
+            )
+
         return self.run_timestamp
 
-    def _find_session_id(self):
+    def _find_session_id(self) -> str | None:
+        """
+        Finder Automation Server-sessionens id.
+
+        Output:
+            Returnerer AUTOMATION_SESSION_ID fra miljøvariablerne.
+            Returnerer None, hvis værdien ikke findes.
+        """
+
         return os.getenv("AUTOMATION_SESSION_ID")
 
-    def _find_github_repo_name(self):
+    def _find_github_repo_name(self) -> str:
+        """
+        Finder navnet på det aktuelle Git-repository.
+
+        Output:
+            Returnerer GITHUB_REPO_NAME, hvis miljøvariablen findes.
+
+            Ellers forsøges repository-navnet fundet via Git.
+
+            Returnerer 'local-debug', hvis det ikke kan findes.
+        """
+
         env_name = os.getenv("GITHUB_REPO_NAME")
+
         if env_name:
             return env_name
 
         try:
             result = subprocess.check_output(
-                ["git", "config", "--get", "remote.origin.url"],
-                stderr=subprocess.DEVNULL
+                [
+                    "git",
+                    "config",
+                    "--get",
+                    "remote.origin.url",
+                ],
+                stderr=subprocess.DEVNULL,
             ).decode().strip()
-            return result.split("/")[-1].replace(".git", "")
+
+            return (
+                result
+                .split("/")[-1]
+                .replace(".git", "")
+            )
         except Exception:
             return "local-debug"
