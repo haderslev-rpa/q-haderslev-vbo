@@ -60,6 +60,7 @@ class BrowserSession:
         video: bool = False,
         force_new: bool = False,
         http_credentials: HttpCredentials | None = None,
+        use_regular_chromium: bool = False,
     ):
         """
         Opretter en BrowserSession.
@@ -91,6 +92,10 @@ class BrowserSession:
                 Hvis værdien er None, sendes der ingen HTTP-credentials
                 til Playwright.
 
+            use_regular_chromium:
+                False bevarer Playwrights normale valg af browser.
+                True bruger den almindelige Chromium-executable.
+
         Output:
             Opretter et BrowserSession-objekt.
 
@@ -103,6 +108,7 @@ class BrowserSession:
         self.video = video
         self.force_new = force_new
         self.http_credentials = http_credentials
+        self.use_regular_chromium = use_regular_chromium
 
         # Playwright
         self.pw = None
@@ -121,6 +127,7 @@ class BrowserSession:
     # -------------------------------------------------
     # START
     # -------------------------------------------------
+
     async def start(self) -> None:
         """
         Starter Playwright og Chromium.
@@ -141,14 +148,28 @@ class BrowserSession:
         self.pw = await async_playwright().start()
 
         try:
-            self.browser = await self.pw.chromium.launch(
-                headless=self.headless,
-                args=[
-                    "--disable-infobars",
-                    "--disable-notifications",
-                    "--disable-extensions",
-                ],
-            )
+            if self.use_regular_chromium:
+                self.browser = await self.pw.chromium.launch(
+                    headless=self.headless,
+                    executable_path=(
+                        self.pw.chromium.executable_path
+                    ),
+                    args=[
+                        "--disable-infobars",
+                        "--disable-notifications",
+                        "--disable-extensions",
+                    ],
+                )
+            else:
+                self.browser = await self.pw.chromium.launch(
+                    headless=self.headless,
+                    args=[
+                        "--disable-infobars",
+                        "--disable-notifications",
+                        "--disable-extensions",
+                    ],
+                )
+
         except Exception:
             await self.pw.stop()
             self.pw = None
@@ -167,6 +188,7 @@ class BrowserSession:
     # -------------------------------------------------
     # NEW PAGE
     # -------------------------------------------------
+
     async def new_page(self) -> Page:
         """
         Opretter en ny Playwright-side med RPA-standardindstillinger.
@@ -204,10 +226,8 @@ class BrowserSession:
                     "width": 1920,
                     "height": 1080,
                 },
-
                 # Undgå fejl fra interne SSL-certifikater.
                 "ignore_https_errors": True,
-
                 # Dansk brugergrænseflade, hvor det understøttes.
                 "locale": "da-DK",
             }
@@ -237,6 +257,7 @@ class BrowserSession:
     # -------------------------------------------------
     # SCREENSHOT
     # -------------------------------------------------
+
     async def screenshot(
         self,
         page: Page,
@@ -259,7 +280,6 @@ class BrowserSession:
 
         Output:
             Funktionen returnerer ikke et resultat.
-
             Screenshotet håndteres af PlaywrightRunRecorder.
         """
 
@@ -273,6 +293,7 @@ class BrowserSession:
     # -------------------------------------------------
     # CLOSE PAGE
     # -------------------------------------------------
+
     async def close_page(
         self,
         page: Page,
@@ -295,6 +316,7 @@ class BrowserSession:
     # -------------------------------------------------
     # CLOSE OTHER TABS
     # -------------------------------------------------
+
     async def close_all_other_tabs(
         self,
         active_page: Page,
@@ -342,6 +364,7 @@ class BrowserSession:
     # -------------------------------------------------
     # CLOSE SESSION
     # -------------------------------------------------
+
     async def close(self) -> None:
         """
         Lukker BrowserContext, browser og Playwright.
@@ -374,6 +397,7 @@ class BrowserSession:
     # -------------------------------------------------
     # VALIDATION
     # -------------------------------------------------
+
     @staticmethod
     def _validate_http_credentials(
         http_credentials: HttpCredentials,
@@ -412,6 +436,7 @@ class BrowserSession:
     # -------------------------------------------------
     # HELPERS
     # -------------------------------------------------
+
     def _generate_timestamp(self) -> str:
         """
         Opretter tidspunktet for kørslen.
@@ -485,5 +510,6 @@ class BrowserSession:
                 .split("/")[-1]
                 .replace(".git", "")
             )
+
         except Exception:
             return "local-debug"
