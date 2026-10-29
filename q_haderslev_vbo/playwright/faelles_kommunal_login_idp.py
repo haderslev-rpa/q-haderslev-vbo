@@ -24,7 +24,7 @@ async def _login_robot(page, session):
     Output:
     Funktionen returnerer ikke noget.
 
-    Ved succes er browseren sendt videre fra IDP-siden.
+    Ved succes er robotformularen ikke længere synlig.
     Ved fejl tages et screenshot, og RuntimeError bliver kastet.
     """
 
@@ -44,9 +44,6 @@ async def _login_robot(page, session):
         and await robot_btn.is_visible()
     ):
         await robot_btn.click()
-
-        # Giv robotformularen tid til at blive vist efter klik.
-        await page.wait_for_timeout(2_000)
 
     # Vent på at inputfeltet er synligt.
     await page.wait_for_selector(
@@ -71,46 +68,33 @@ async def _login_robot(page, session):
         API_KEY,
     )
 
-    # Lille pause så IDP-siden kan registrere inputværdierne.
-    await page.wait_for_timeout(1_000)
+    robot_form = page.locator("#robotForm")
 
-    # Indsend formularen.
-    await page.evaluate(
-        "() => document.querySelector('#robotForm').submit()"
-    )
+    print("⏳ Login indsendes. Venter på viderestilling...")
 
-    print("⏳ Login indsendt. Venter på viderestilling...")
-
-    # FASIT og IDP kan være langsomme efter submit.
-    await page.wait_for_timeout(10_000)
-
-    # Vent på eventuel navigation.
+    # Vent på navigationen samtidig med submit.
     try:
-        await page.wait_for_load_state(
-            "domcontentloaded",
+        async with page.expect_navigation(
+            wait_until="domcontentloaded",
             timeout=60_000,
-        )
+        ):
+            await page.evaluate(
+                "() => document.querySelector('#robotForm').submit()"
+            )
     except Exception:
         print(
-            "⚠️ Siden nåede ikke domcontentloaded inden timeout. "
+            "⚠️ Navigationen nåede ikke domcontentloaded inden timeout. "
             "Kontrollerer loginresultatet alligevel."
         )
 
-    # Ekstra buffer til langsom viderestilling fra IDP til FASIT.
-    await page.wait_for_timeout(10_000)
-
-    print(f"🌐 URL efter login: {page.url}")
-
-    robot_form = page.locator("#robotForm")
-
-    # Det er ikke en fejl, at formularen stadig findes skjult i DOM'en.
-    # Det er kun en fejl, hvis formularen fortsat er synlig.
-    robot_form_visible = False
-
-    if await robot_form.count() > 0:
-        robot_form_visible = await robot_form.is_visible()
-
-    if robot_form_visible:
+    # Vent dynamisk på at robotformularen forsvinder.
+    # Funktionen fortsætter straks, når formularen er skjult eller fjernet.
+    try:
+        await robot_form.wait_for(
+            state="hidden",
+            timeout=30_000,
+        )
+    except Exception:
         await session.recorder.screenshot(
             page,
             "FEJL_login",
@@ -121,6 +105,7 @@ async def _login_robot(page, session):
             "Robotformularen er stadig synlig efter ventetiden."
         )
 
+    print(f"🌐 URL efter login: {page.url}")
     print("✅ FK IDP login gennemført")
 
 
