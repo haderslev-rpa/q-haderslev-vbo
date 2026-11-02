@@ -1,18 +1,26 @@
+import asyncio
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import TypedDict
 
 from playwright.async_api import (
+    Browser,
     BrowserContext,
     Page,
+    Playwright,
     async_playwright,
 )
 
 from q_haderslev_vbo.playwright.playwright_run_recorder import (
     PlaywrightRunRecorder,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class HttpCredentials(TypedDict):
@@ -44,6 +52,7 @@ class BrowserSession:
     - Oprettelse og lukning af sider
     - Screenshots via PlaywrightRunRecorder
     - Metadata om proceskørslen
+    - Ét reparationsforsøg, hvis Chromium-executablen mangler
 
     HTTP-credentials:
         Hvis http_credentials bliver sendt med, anvendes oplysningerne,
@@ -98,11 +107,9 @@ class BrowserSession:
 
         Output:
             Opretter et BrowserSession-objekt.
-
             Browseren startes først, når start() kaldes.
             BrowserContext oprettes først, når new_page() kaldes.
         """
-
         self.headless = headless
         self.debug = debug
         self.video = video
@@ -111,18 +118,18 @@ class BrowserSession:
         self.use_regular_chromium = use_regular_chromium
 
         # Playwright
-        self.pw = None
-        self.browser = None
+        self.pw: Playwright | None = None
+        self.browser: Browser | None = None
         self.context: BrowserContext | None = None
 
         # Metadata
-        self.github_repo_name = None
-        self.session_id = None
-        self.run_timestamp = None
-        self.run_name = None
+        self.github_repo_name: str | None = None
+        self.session_id: str | None = None
+        self.run_timestamp: str | None = None
+        self.run_name: str | None = None
 
         # Recorder bruges blandt andet til screenshots.
-        self.recorder = None
+        self.recorder: PlaywrightRunRecorder | None = None
 
     # -------------------------------------------------
     # START
@@ -132,6 +139,10 @@ class BrowserSession:
         """
         Starter Playwright og Chromium.
 
+        Hvis Playwright melder, at Chromium-executablen mangler,
+        installeres den forventede Chromium-version, og browserstarten
+        forsøges én gang igen.
+
         Output:
             Starter browseren, men opretter endnu ikke en side.
 
@@ -139,7 +150,6 @@ class BrowserSession:
             new_page(). Det er dér eventuelle HTTP-credentials bliver
             sendt til Playwright.
         """
-
         if self.pw is not None or self.browser is not None:
             raise RuntimeError(
                 "BrowserSession er allerede startet."
@@ -148,32 +158,40 @@ class BrowserSession:
         self.pw = await async_playwright().start()
 
         try:
-            if self.use_regular_chromium:
-                self.browser = await self.pw.chromium.launch(
-                    headless=self.headless,
-                    executable_path=(
-                        self.pw.chromium.executable_path
-                    ),
-                    args=[
-                        "--disable-infobars",
-                        "--disable-notifications",
-                        "--disable-extensions",
-                    ],
-                )
-            else:
-                self.browser = await self.pw.chromium.launch(
-                    headless=self.headless,
-                    args=[
-                        "--disable-infobars",
-                        "--disable-notifications",
-                        "--disable-extensions",
-                    ],
+            self.browser = await self._launch_chromium()
+
+        except Exception as first_error:
+            if not self._is_missing_chromium_error(first_error):
+                await self._stop_playwright_after_start_error()
+                raise
+
+            logger.warning(
+                "Chromium-executablen blev ikke fundet. "
+                "Der udføres ét reparationsforsøg. "
+                "Forventet executable: %s",
+                self.pw.chromium.executable_path,
+            )
+
+            try:
+                await asyncio.to_thread(
+                    self._install_chromium
                 )
 
-        except Exception:
-            await self.pw.stop()
-            self.pw = None
-            raise
+                logger.info(
+                    "Chromium-installationen blev gennemført. "
+                    "Forsøger at starte browseren igen."
+                )
+
+                self.browser = await self._launch_chromium()
+
+            except Exception:
+                logger.exception(
+                    "Chromium kunne ikke installeres eller startes "
+                    "ved reparationsforsøget."
+                )
+
+                await self._stop_playwright_after_start_error()
+                raise
 
         self.github_repo_name = self._find_github_repo_name()
         self.session_id = self._find_session_id()
@@ -184,6 +202,138 @@ class BrowserSession:
             browser_session=self,
             debug=self.debug,
         )
+
+    async def _launch_chromium(self) -> Browser:
+        """
+        Starter Chromium med BrowserSessions normale indstillinger.
+
+        Output:
+            Returnerer den startede Playwright Browser.
+
+        Raises:
+            RuntimeError:
+                Hvis Playwright endnu ikke er startet.
+
+            Playwright-fejl:
+                Hvis Chromium ikke kan startes.
+        """
+        if self.pw is None:
+            raise RuntimeError(
+                "Playwright er ikke startet."
+            )
+
+        launch_arguments = [
+            "--disable-infobars",
+            "--disable-notifications",
+            "--disable-extensions",
+        ]
+
+        if self.use_regular_chromium:
+            return await self.pw.chromium.launch(
+                headless=self.headless,
+                executable_path=self.pw.chromium.executable_path,
+                args=launch_arguments,
+            )
+
+        return await self.pw.chromium.launch(
+            headless=self.headless,
+            args=launch_arguments,
+        )
+
+    @staticmethod
+    def _is_missing_chromium_error(
+        error: Exception,
+    ) -> bool:
+        """
+        Undersøger, om browserstarten fejlede, fordi executable mangler.
+
+        Output:
+            True, hvis fejlen matcher Playwrights fejl for en manglende
+            browser-executable.
+
+            Ellers False.
+        """
+        error_message = str(error).casefold()
+
+        return (
+            "executable doesn't exist" in error_message
+            or "executable does not exist" in error_message
+        )
+
+    @staticmethod
+    def _install_chromium() -> None:
+        """
+        Installerer den Chromium-version, som processens Playwright-pakke
+        forventer.
+
+        Installationen køres med processens aktive Python-fortolker.
+        Dermed anvendes Playwright fra det samme virtuelle miljø som
+        BrowserSession.
+
+        Miljøvariabler som PLAYWRIGHT_BROWSERS_PATH bliver bevaret.
+
+        Output:
+            Funktionen returnerer ikke en værdi.
+
+        Raises:
+            subprocess.CalledProcessError:
+                Hvis Playwright-installationen returnerer en fejlkode.
+
+            subprocess.TimeoutExpired:
+                Hvis installationen ikke afsluttes inden tidsgrænsen.
+        """
+        command = [
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "chromium",
+        ]
+
+        logger.info(
+            "Installerer Chromium med kommandoen: %s",
+            " ".join(command),
+        )
+
+        completed_process = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=os.environ.copy(),
+        )
+
+        stdout = completed_process.stdout.strip()
+        stderr = completed_process.stderr.strip()
+
+        if stdout:
+            logger.info(
+                "Output fra Chromium-installation:\n%s",
+                stdout,
+            )
+
+        if stderr:
+            logger.warning(
+                "Fejloutput fra Chromium-installation:\n%s",
+                stderr,
+            )
+
+    async def _stop_playwright_after_start_error(self) -> None:
+        """
+        Rydder op efter en fejl under browserstart.
+
+        Output:
+            Funktionen returnerer ikke en værdi.
+            Browser- og Playwright-referencer nulstilles.
+        """
+        self.browser = None
+
+        if self.pw is not None:
+            try:
+                await self.pw.stop()
+            finally:
+                self.pw = None
 
     # -------------------------------------------------
     # NEW PAGE
@@ -202,7 +352,6 @@ class BrowserSession:
 
             Efterfølgende kald opretter nye sider i den samme context.
         """
-
         if self.browser is None:
             raise RuntimeError(
                 "BrowserSession er ikke startet. "
@@ -210,6 +359,12 @@ class BrowserSession:
             )
 
         if self.context is None:
+            if self.run_name is None:
+                raise RuntimeError(
+                    "BrowserSession mangler run_name. "
+                    "Kald await session.start() før session.new_page()."
+                )
+
             run_dir = (
                 Path("tests_local_playwright")
                 / self.run_name
@@ -226,8 +381,10 @@ class BrowserSession:
                     "width": 1920,
                     "height": 1080,
                 },
+
                 # Undgå fejl fra interne SSL-certifikater.
                 "ignore_https_errors": True,
+
                 # Dansk brugergrænseflade, hvor det understøttes.
                 "locale": "da-DK",
             }
@@ -237,8 +394,8 @@ class BrowserSession:
                     run_dir
                 )
 
-            # HTTP-credentials kan kun angives, når contexten
-            # oprettes. Hvis værdien er None, sendes intet med.
+            # HTTP-credentials kan kun angives, når contexten oprettes.
+            # Hvis værdien er None, sendes intet med.
             if self.http_credentials is not None:
                 self._validate_http_credentials(
                     self.http_credentials
@@ -282,7 +439,6 @@ class BrowserSession:
             Funktionen returnerer ikke et resultat.
             Screenshotet håndteres af PlaywrightRunRecorder.
         """
-
         if self.recorder:
             await self.recorder.screenshot(
                 page,
@@ -309,7 +465,6 @@ class BrowserSession:
             Funktionen returnerer ikke et resultat.
             En allerede lukket side ignoreres.
         """
-
         if not page.is_closed():
             await page.close()
 
@@ -335,7 +490,6 @@ class BrowserSession:
         Output:
             Funktionen returnerer ikke et resultat.
         """
-
         if self.context is None:
             return
 
@@ -353,6 +507,8 @@ class BrowserSession:
                 try:
                     await page.close()
                 except Exception:
+                    # Cleanup af én fane må ikke forhindre oprydning
+                    # af de resterende faner.
                     pass
 
         if print_log:
@@ -375,7 +531,6 @@ class BrowserSession:
             Hvis video er aktiveret, færdiggør Playwright videoen,
             når BrowserContext bliver lukket.
         """
-
         if self.context is not None:
             try:
                 await self.context.close()
@@ -419,7 +574,6 @@ class BrowserSession:
         Sikkerhed:
             Loginoplysningerne bliver ikke udskrevet.
         """
-
         username = http_credentials.get("username")
         password = http_credentials.get("password")
 
@@ -445,7 +599,6 @@ class BrowserSession:
             Returnerer et tidspunkt som tekst på formen:
             '08-09-2026 14-30'.
         """
-
         return datetime.now().strftime(
             "%d-%m-%Y %H-%M"
         )
@@ -457,6 +610,10 @@ class BrowserSession:
         Output:
             Returnerer tidspunkt og eventuelt automation session-id.
         """
+        if self.run_timestamp is None:
+            raise RuntimeError(
+                "BrowserSession mangler run_timestamp."
+            )
 
         if self.session_id:
             return (
@@ -474,7 +631,6 @@ class BrowserSession:
             Returnerer AUTOMATION_SESSION_ID fra miljøvariablerne.
             Returnerer None, hvis værdien ikke findes.
         """
-
         return os.getenv("AUTOMATION_SESSION_ID")
 
     def _find_github_repo_name(self) -> str:
@@ -488,7 +644,6 @@ class BrowserSession:
 
             Returnerer 'local-debug', hvis det ikke kan findes.
         """
-
         env_name = os.getenv("GITHUB_REPO_NAME")
 
         if env_name:
